@@ -4,14 +4,14 @@ import java.io.File;
 import java.util.Scanner;
 import java.util.function.BiFunction;
 
-public class Main {
+public class JavaMain {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
         System.out.print("Enter a file path: ");
         String input = sc.nextLine();
         System.out.print("Enter number of files: ");
         int n = sc.nextInt();
-        BiFunction<File, Integer, Iterable<File>> topN = Util::topN;
+        BiFunction<File, Integer, Iterable<File>> topN = TopNFiles::singleThreadedTopN;
         runTopN(topN, input, n);
         sc.close();
     }
