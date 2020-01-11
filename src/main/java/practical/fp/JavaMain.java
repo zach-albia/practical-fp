@@ -4,19 +4,17 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
-import java.util.function.BiFunction;
 
 public class JavaMain {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
         System.out.print("Enter a file path: ");
         String input = sc.nextLine();
-        System.out.print("Enter number of files: ");
+        System.out.print("Enter number of top files by file size: ");
         int n = sc.nextInt();
-        List<BiFunction<File, Integer, Iterable<File>>> topNs =
-                new ArrayList<>();
-        topNs.add(TopNFiles::singleThreadedTopN);
-        topNs.add(TopNFiles::multiThreadedTopN);
+        List<TopN> topNs = new ArrayList<>();
+        topNs.add(new SingleThreadedTopN());
+        topNs.add(new MultiThreadedTopN());
         runTopN(input, n, topNs);
         sc.close();
     }
@@ -24,12 +22,15 @@ public class JavaMain {
     private static void runTopN(
             String input,
             int n,
-            List<BiFunction<File, Integer, Iterable<File>>> topNs
+            List<TopN> topNs
     ) {
-        for (BiFunction<File, Integer, Iterable<File>> topN : topNs) {
-            for (File file : topN.apply(new File(input), n)) {
+        for (TopN topN : topNs) {
+            long start = System.currentTimeMillis();
+            for (File file : topN.findTopNFiles(new File(input), n)) {
                 System.out.println(file.getAbsolutePath());
             }
+            long end = System.currentTimeMillis();
+            System.out.println("Time: " + ((double)end - start) / 1000);
             System.out.println("\n");
         }
     }
