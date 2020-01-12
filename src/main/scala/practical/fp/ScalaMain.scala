@@ -1,49 +1,88 @@
 package practical.fp
 
-import java.io.File
-
 import zio.console._
-import zio.{ Ref, UIO, ZIO }
+import java.io.{ File => JFile }
+import zio._
 
 import scala.collection.immutable.TreeSet
+import practical.fp.ScalaMain.File
+import practical.fp.ScalaMain.DirectoryFiles
+import practical.fp.ScalaMain.NonFile
 
-object ScalaMain extends zio.App {
+object ScalaMain extends App {
+
+  sealed trait FilePath
+  final case class File(file: JFile)                           extends FilePath
+  final case class DirectoryFiles(files: Option[Array[JFile]]) extends FilePath
+  final case object NonFile                                    extends FilePath
+
+  case class Env(n: Int, topNFiles: Ref[TreeSet[JFile]])
 
   def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] =
     (for {
       _      <- putStr("Enter a file path: ")
       path   <- getStrLn
       _      <- putStr("Enter number of top files by file size: ")
-      number <- getStrLn.map(_.toInt)
+      number <- getStrLn.map(_.toInt).refineToOrDie[NumberFormatException]
       files  <- topNFiles(path, number)
-      _      <- putStrLn(files.map(_.getAbsolutePath).mkString("\n"))
+      _      <- ZIO.sequence(files.map(file => putStrLn(file.getAbsolutePath)))
     } yield ()).foldM(
-      e => putStrLn(e.getMessage) *> ZIO.succeed(0),
-      (_: Any) => ZIO.succeed(1)
+      e => putStrLn(e.getMessage) *> ZIO.succeed(1),
+      _ => ZIO.succeed(0)
     )
 
-  def topNFiles(str: String, n: Int): UIO[TreeSet[File]] =
+  // TODO: Fix race condition issue, STM to the rescue?
+  def toFilePath(file: JFile): FilePath =
+    if (file.exists()) {
+      if (file.isFile()) File(file)
+      else if (file.isDirectory()) {
+        val files = file.listFiles()
+        DirectoryFiles(if (null == files) None else Some(files))
+      } else NonFile
+    } else NonFile
+
+  def topNFiles(pathStr: String, n: Int): UIO[TreeSet[JFile]] =
     for {
-      set   <- Ref.make(TreeSet()(Ordering.fromLessThan[File](_.length < _.length)))
-      root  <- ZIO.effectTotal(new File(str))
-      _     <- doTopNFiles(root, n, set)
-      files <- set.get
+      topNFiles <- Ref.make(TreeSet[JFile]()(Ordering.by(_.length())))
+      _         <- doTopNFiles(toFilePath(new JFile(pathStr))).provide(Env(n, topNFiles))
+      files     <- topNFiles.get
     } yield files
 
-  private def doTopNFiles(root: File, n: Int, ref: Ref[TreeSet[File]]): UIO[Unit] =
-    if (root.exists) {
-      if (root.isFile) updateAndBind(root, n, ref)
-      else {
-        ZIO.sequence(root.listFiles.toList.map(subPath => {
-          if (subPath.isFile) updateAndBind(subPath, n, ref)
-          else doTopNFiles(subPath, n, ref)
-        })).unit
-      }
-    } else ZIO.succeed(Nil)
+  private def doTopNFiles(root: FilePath): URIO[Env, Unit] =
+    root match {
+      case File(file) =>
+        updateAndBound(file)
+      case DirectoryFiles(files) =>
+        topNFilesDir(files)
+      case NonFile =>
+        ZIO.unit
+    }
 
-  private def updateAndBind(root: File, n: Int, set: Ref[TreeSet[File]]) =
+  private def topNFilesDir(files: Option[Array[JFile]]) =
+    files.fold[URIO[Env, Unit]](ZIO.unit)(
+      arr => ZIO.sequence(arr.map((toFilePath(_)).andThen(topNSubPath))).unit
+    )
+
+  private def topNSubPath(filePath: FilePath) = filePath match {
+    case File(file) =>
+      updateAndBound(file)
+    case DirectoryFiles(files) =>
+      files.fold[URIO[Env, Unit]](ZIO.unit)(
+        files => {
+          val recurseTopN =
+            files.map((toFilePath(_)).andThen(doTopNFiles))
+          ZIO.sequencePar(recurseTopN).unit
+        }
+      )
+    case NonFile =>
+      ZIO.unit
+  }
+
+  private def updateAndBound(root: JFile): ZIO[Env, Nothing, Unit] =
     for {
-      files <- set.update(_ + root)
-      _     <- if (files.size > n) set.update(_.drop(1)) else ZIO.unit
+      env      <- ZIO.environment[Env]
+      (set, n) = (env.topNFiles, env.n)
+      files    <- set.update(_ + root)
+      _        <- if (files.size > n) set.update(_.drop(1)) else ZIO.unit
     } yield ()
 }
