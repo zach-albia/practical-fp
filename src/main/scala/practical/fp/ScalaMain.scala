@@ -5,9 +5,6 @@ import java.io.{ File => JFile }
 import zio._
 
 import scala.collection.immutable.TreeSet
-import practical.fp.ScalaMain.File
-import practical.fp.ScalaMain.DirectoryFiles
-import practical.fp.ScalaMain.NonFile
 
 object ScalaMain extends App {
 
@@ -32,12 +29,13 @@ object ScalaMain extends App {
     )
 
   // TODO: Fix race condition issue, STM to the rescue?
+  // TODO: Use Blocking thread pool!
   def toFilePath(file: JFile): FilePath =
     if (file.exists()) {
-      if (file.isFile()) File(file)
-      else if (file.isDirectory()) {
+      if (file.isFile) File(file)
+      else if (file.isDirectory) {
         val files = file.listFiles()
-        DirectoryFiles(if (null == files) None else Some(files))
+        DirectoryFiles(Option(files))
       } else NonFile
     } else NonFile
 
@@ -59,30 +57,30 @@ object ScalaMain extends App {
     }
 
   private def topNFilesDir(files: Option[Array[JFile]]) =
-    files.fold[URIO[Env, Unit]](ZIO.unit)(
-      arr => ZIO.sequence(arr.map((toFilePath(_)).andThen(topNSubPath))).unit
-    )
+    files.fold[URIO[Env, Unit]](ZIO.unit) { arr =>
+      ZIO.sequence(arr.map((toFilePath _).andThen(topNSubPath))).unit
+    }
 
   private def topNSubPath(filePath: FilePath) = filePath match {
     case File(file) =>
       updateAndBound(file)
     case DirectoryFiles(files) =>
-      files.fold[URIO[Env, Unit]](ZIO.unit)(
-        files => {
-          val recurseTopN =
-            files.map((toFilePath(_)).andThen(doTopNFiles))
-          ZIO.sequencePar(recurseTopN).unit
-        }
-      )
+      files.fold[URIO[Env, Unit]](ZIO.unit) { files =>
+        val recurseTopN =
+          files.map((toFilePath _).andThen(doTopNFiles))
+        ZIO.sequencePar(recurseTopN).unit
+      }
     case NonFile =>
       ZIO.unit
   }
 
   private def updateAndBound(root: JFile): ZIO[Env, Nothing, Unit] =
     for {
-      env      <- ZIO.environment[Env]
-      (set, n) = (env.topNFiles, env.n)
-      files    <- set.update(_ + root)
-      _        <- if (files.size > n) set.update(_.drop(1)) else ZIO.unit
+      env            <- ZIO.environment[Env]
+      (topNFiles, n) = (env.topNFiles, env.n)
+      files          <- topNFiles.update(_ + root)
+      _ <- if (files.size > n) {
+            topNFiles.update(_.drop(1))
+          } else ZIO.unit
     } yield ()
 }
