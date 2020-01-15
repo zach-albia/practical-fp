@@ -1,86 +1,98 @@
 package practical.fp
 
-import zio.console._
 import java.io.{ File => JFile }
-import zio._
+
+import zio.blocking._
+import zio.console._
+import zio.{ App, Ref, ZEnv, ZIO }
 
 import scala.collection.immutable.TreeSet
 
 object ScalaMain extends App {
 
-  sealed trait FilePath
-  final case class File(file: JFile)                           extends FilePath
-  final case class DirectoryFiles(files: Option[Array[JFile]]) extends FilePath
-  final case object NonFile                                    extends FilePath
+  sealed trait FileRead
+  final case class File(file: JFile)                extends FileRead
+  final case class Dir(files: Option[Array[JFile]]) extends FileRead
+  final case object NoRead                          extends FileRead
 
-  case class Env(n: Int, topNFiles: Ref[TreeSet[JFile]])
+  trait Env {
+    val config: Env.Config
+  }
 
-  def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] =
+  object Env {
+    case class Config(n: Int, topNFiles: Ref[TreeSet[JFile]])
+  }
+
+  type FileRIO[R <: Blocking, A] = ZIO[R, SecurityException, A]
+  type FileIO[A]                 = FileRIO[Blocking, A]
+  type EnvFileIO[A]              = FileRIO[Env with Blocking, A]
+
+  def run(args: List[String]): ZIO[ZEnv, Nothing, Int] =
     (for {
       _      <- putStr("Enter a file path: ")
       path   <- getStrLn
       _      <- putStr("Enter number of top files by file size: ")
       number <- getStrLn.map(_.toInt).refineToOrDie[NumberFormatException]
       files  <- topNFiles(path, number)
-      _      <- ZIO.sequence(files.map(file => putStrLn(file.getAbsolutePath)))
+      _      <- ZIO.foreach_(files)(file => putStrLn(file.getAbsolutePath))
     } yield ()).foldM(
       e => putStrLn(e.getMessage) *> ZIO.succeed(1),
       _ => ZIO.succeed(0)
     )
 
-  // TODO: Fix race condition issue, STM to the rescue?
-  // TODO: Use Blocking thread pool!
-  def toFilePath(file: JFile): FilePath =
-    if (file.exists()) {
-      if (file.isFile) File(file)
-      else if (file.isDirectory) {
-        val files = file.listFiles()
-        DirectoryFiles(Option(files))
-      } else NonFile
-    } else NonFile
-
-  def topNFiles(pathStr: String, n: Int): UIO[TreeSet[JFile]] =
+  def topNFiles(pathStr: String, n: Int): FileIO[Iterable[JFile]] =
     for {
       topNFiles <- Ref.make(TreeSet[JFile]()(Ordering.by(_.length())))
-      _         <- doTopNFiles(toFilePath(new JFile(pathStr))).provide(Env(n, topNFiles))
-      files     <- topNFiles.get
+      filePath  <- read(new JFile(pathStr))
+      _ <- doTopNFiles(filePath).provideSome[Blocking] { base =>
+            new Env with Blocking {
+              val config   = Env.Config(n, topNFiles)
+              val blocking = base.blocking
+            }
+          }
+      files <- topNFiles.get
     } yield files
 
-  private def doTopNFiles(root: FilePath): URIO[Env, Unit] =
-    root match {
+  def read(file: JFile): FileIO[FileRead] =
+    fileEffect(file.exists).flatMap { fileExists =>
+      if (fileExists) {
+        for {
+          isFile      <- fileEffect(file.isFile)
+          isDirectory <- fileEffect(file.isDirectory)
+          filePath <- if (isFile)
+                       ZIO.succeed(File(file))
+                     else if (isDirectory)
+                       fileEffect(file.listFiles())
+                         .map(files => Dir(Option(files)))
+                     else ZIO.succeed(NoRead)
+        } yield filePath
+      } else ZIO.succeed(NoRead)
+    }
+
+  private def fileEffect[A](a: A): FileIO[A] =
+    blocking(ZIO.effect(a).refineToOrDie[SecurityException])
+
+  private def doTopNFiles(fileRead: FileRead): EnvFileIO[Unit] =
+    fileRead match {
       case File(file) =>
         updateAndBound(file)
-      case DirectoryFiles(files) =>
-        topNFilesDir(files)
-      case NonFile =>
+      case Dir(files) =>
+        files.fold[EnvFileIO[Unit]](ZIO.unit)(
+          files => ZIO.foreach_(files)(read(_).flatMap(doTopNFiles))
+        )
+      case NoRead =>
         ZIO.unit
     }
-
-  private def topNFilesDir(files: Option[Array[JFile]]) =
-    files.fold[URIO[Env, Unit]](ZIO.unit) { arr =>
-      ZIO.sequence(arr.map((toFilePath _).andThen(topNSubPath))).unit
-    }
-
-  private def topNSubPath(filePath: FilePath) = filePath match {
-    case File(file) =>
-      updateAndBound(file)
-    case DirectoryFiles(files) =>
-      files.fold[URIO[Env, Unit]](ZIO.unit) { files =>
-        val recurseTopN =
-          files.map((toFilePath _).andThen(doTopNFiles))
-        ZIO.sequencePar(recurseTopN).unit
-      }
-    case NonFile =>
-      ZIO.unit
-  }
 
   private def updateAndBound(root: JFile): ZIO[Env, Nothing, Unit] =
     for {
       env            <- ZIO.environment[Env]
-      (topNFiles, n) = (env.topNFiles, env.n)
-      files          <- topNFiles.update(_ + root)
-      _ <- if (files.size > n) {
-            topNFiles.update(_.drop(1))
-          } else ZIO.unit
+      (topNFiles, n) = (env.config.topNFiles, env.config.n)
+      _ <- topNFiles.update { topNFiles =>
+            val newFiles = topNFiles + root
+            if (newFiles.size > n)
+              newFiles.drop(1)
+            else newFiles
+          }
     } yield ()
 }
