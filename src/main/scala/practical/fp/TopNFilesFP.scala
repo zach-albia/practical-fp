@@ -3,7 +3,7 @@ package practical.fp
 import java.io.{ File => JFile }
 
 import practical.fp.FileRead._
-import zio.blocking.{ blocking, Blocking }
+import zio.blocking.{ effectBlocking, Blocking }
 import zio.{ Ref, URIO, ZIO }
 
 import scala.collection.immutable.TreeSet
@@ -40,31 +40,23 @@ object TopNFilesFP {
       case File(file) =>
         addTopN(file)
       case Dir(files) =>
-        files.fold[EnvFileIO[Unit]](ZIO.unit)(files =>
-          ZIO.foreach_(files)(read(_).flatMap(doTopNFiles))
+        files.fold[EnvFileIO[Unit]](ZIO.unit)(
+          files => ZIO.foreach_(files)(read(_).flatMap(doTopNFiles))
         )
       case NoRead =>
         ZIO.unit
     }
 
   private def read(file: JFile): FileIO[FileRead] =
-    fileEffect(file.exists).flatMap { fileExists =>
-      if (fileExists) {
-        for {
-          isFile      <- fileEffect(file.isFile)
-          isDirectory <- fileEffect(file.isDirectory)
-          filePath <- if (isFile)
-            ZIO.succeed(File(file))
-          else if (isDirectory)
-            fileEffect(file.listFiles())
-              .map(files => Dir(Option(files)))
-          else ZIO.succeed(NoRead)
-        } yield filePath
-      } else ZIO.succeed(NoRead)
-    }
-
-  private def fileEffect[A](a: A): FileIO[A] =
-    blocking(ZIO.effect(a).refineToOrDie[SecurityException])
+    effectBlocking(
+      if (file.exists) {
+        if (file.isFile) {
+          File(file)
+        } else if (file.isDirectory)
+          Dir(Option(file.listFiles()))
+        else NoRead
+      } else NoRead
+    ).refineToOrDie[SecurityException]
 
   private def addTopN(root: JFile): URIO[Env, Unit] =
     for {

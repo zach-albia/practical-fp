@@ -26,7 +26,7 @@ class TopNFilesJava {
                 if (fileInPath.isFile()) {
                     topNFiles.add(fileInPath);
                     if (topNFiles.size() > n) topNFiles.remove();
-                } else {
+                } else if (fileInPath.isDirectory()) {
                     doTopN(fileInPath, n, topNFiles);
                 }
             }

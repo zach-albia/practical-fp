@@ -1,0 +1,4 @@
+Exercises:
+----------
+https://www.w3resource.com/java-exercises/io/index.php
+https://cs.lmu.edu/~ray/notes/javanetexamples/
