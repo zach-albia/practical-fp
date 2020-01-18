@@ -10,37 +10,38 @@ import scala.collection.immutable.TreeSet
 
 object TopNFilesFP {
 
-  trait Env {
-    val config: Env.Config
+  trait Config {
+    val config: Config.Data
   }
 
-  object Env {
-    case class Config(n: Int, topNFiles: Ref[TreeSet[JFile]])
+  object Config {
+    case class Data(n: Int, topNFiles: Ref[TreeSet[JFile]])
   }
 
   type FileRIO[R <: Blocking, A] = ZIO[R, SecurityException, A]
   type FileIO[A]                 = FileRIO[Blocking, A]
-  type EnvFileIO[A]              = FileRIO[Env with Blocking, A]
+  type Env                       = Config with Blocking
+  type TopNFileIO[A]             = FileRIO[Env, A]
 
   def topNFiles(pathStr: String, n: Int): FileIO[Iterable[JFile]] =
     for {
       topNFiles <- Ref.make(TreeSet[JFile]()(Ordering.by(_.length())))
       filePath  <- read(new JFile(pathStr))
       _ <- doTopNFiles(filePath).provideSome[Blocking] { base =>
-            new Env with Blocking {
-              val config   = Env.Config(n, topNFiles)
+            new Config with Blocking {
+              val config   = Config.Data(n, topNFiles)
               val blocking = base.blocking
             }
           }
       files <- topNFiles.get
     } yield files
 
-  private def doTopNFiles(fileRead: FileRead): EnvFileIO[Unit] =
+  private def doTopNFiles(fileRead: FileRead): TopNFileIO[Unit] =
     fileRead match {
       case File(file) =>
         addTopN(file)
       case Dir(files) =>
-        files.fold[EnvFileIO[Unit]](ZIO.unit)(
+        files.fold[TopNFileIO[Unit]](ZIO.unit)(
           files => ZIO.foreach_(files)(read(_).flatMap(doTopNFiles))
         )
       case NoRead =>
@@ -58,12 +59,12 @@ object TopNFilesFP {
       } else NoRead
     ).refineToOrDie[SecurityException]
 
-  private def addTopN(root: JFile): URIO[Env, Unit] =
+  private def addTopN(file: JFile): URIO[Config, Unit] =
     for {
-      env            <- ZIO.environment[Env]
+      env            <- ZIO.environment[Config]
       (topNFiles, n) = (env.config.topNFiles, env.config.n)
       _ <- topNFiles.update { topNFiles =>
-            val newFiles = topNFiles + root
+            val newFiles = topNFiles + file
             if (newFiles.size > n)
               newFiles.drop(1)
             else newFiles
