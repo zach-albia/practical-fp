@@ -27,10 +27,12 @@ object TopNFilesFP {
     for {
       topNFiles <- Ref.make(TreeSet[JFile]()(Ordering.by(_.length())))
       filePath  <- read(new JFile(pathStr))
-      _ <- doTopNFiles(filePath).provideSome[Blocking] { base =>
-            new Config with Blocking {
-              val config   = Config.Data(n, topNFiles)
-              val blocking = base.blocking
+      _ <- ZIO.when(n > 0) {
+            doTopNFiles(filePath).provideSome[Blocking] { base =>
+              new Config with Blocking {
+                val config   = Config.Data(n, topNFiles)
+                val blocking = base.blocking
+              }
             }
           }
       files <- topNFiles.get

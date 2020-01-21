@@ -11,7 +11,8 @@ object ScalaMain extends App {
       _      <- putStr("Enter a file path: ")
       path   <- getStrLn
       _      <- putStr("Enter number of top files by file size: ")
-      number <- getStrLn.map(_.toInt).refineToOrDie[NumberFormatException]
+      ln     <- getStrLn
+      number <- ZIO.effect(ln.toInt).refineToOrDie[NumberFormatException]
       files  <- topNFiles(path, number)
       _      <- ZIO.foreach_(files)(file => putStrLn(file.getAbsolutePath))
     } yield ()).foldM(
